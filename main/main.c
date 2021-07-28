@@ -136,34 +136,23 @@ static camera_config_t camera_config = {
     .fb_count = 2 //if more than one, i2s runs in continuous mode. Use only with JPEG
 };
 
-
-
-
 /*
  * WIFI event handler
  */
-static esp_err_t event_handler(void *ctx, system_event_t *event)
+static void event_handler(void* arg, esp_event_base_t event_base,
+                                int32_t event_id, void* event_data)
 {
-    switch(event->event_id) {
-        
-    case SYSTEM_EVENT_STA_START:
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        NABTO_LOG_INFO(("SYSTEM_EVENT_STA_START\n"));
         esp_wifi_connect();
-        break;
-        
-    case SYSTEM_EVENT_STA_GOT_IP:
-        NABTO_LOG_INFO(("connected1!\n"));
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        // NABTO_LOG_INFO(("SYSTEM_EVENT_STA_DISCONNECTED\n"));
+        // xEventGroupClearBits(wifi_event_group, CONNECTED_BIT);
+        esp_restart();
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        NABTO_LOG_INFO(("SYSTEM_EVENT_STA_GOT_IP -> connected1!\n"));
         xEventGroupSetBits(wifi_event_group, CONNECTED_BIT);
-        break;
-        
-    case SYSTEM_EVENT_STA_DISCONNECTED:
-        xEventGroupClearBits(wifi_event_group, CONNECTED_BIT);
-        break;
-        
-    default:
-        break;
     }
-    
-    return ESP_OK;
 }
 
 /*
@@ -176,8 +165,6 @@ int hctoi(const unsigned char h) {
     return toupper(h) - 'A' + 10;
   }
 }
-
-
 
 #define PART_BOUNDARY "123456789000000000000987654321"
 static const char* _STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
@@ -197,12 +184,12 @@ esp_err_t jpg_stream_httpd_handler(httpd_req_t *req){
     if(!last_frame) {
         last_frame = esp_timer_get_time();
     }
-    
+
     res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
     if(res != ESP_OK){
         return res;
     }
-    
+
     while(true){
         fb = esp_camera_fb_get();
         if (!fb) {
@@ -254,7 +241,7 @@ esp_err_t jpg_stream_httpd_handler(httpd_req_t *req){
 
 
 
-/* 
+/*
  * Hello world on http://<host>/uri
  */
 esp_err_t get_handler(httpd_req_t *req)
@@ -265,7 +252,7 @@ esp_err_t get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* 
+/*
  * 1m stream of bytes on http://<host>/1m for stream performance testing
  */
 esp_err_t get_handler_1m(httpd_req_t *req)
@@ -300,9 +287,9 @@ esp_err_t get_handler_1m(httpd_req_t *req)
         memcpy(resp_1k+(i*100), resp, 100);
     }
     resp_1k[999]=0;
-    
-    NABTO_LOG_INFO(("strlen:%d 1000000/len:%d", len, 1000000/len));    
-    
+
+    NABTO_LOG_INFO(("strlen:%d 1000000/len:%d", len, 1000000/len));
+
     int64_t start_time = esp_timer_get_time();
 
     // Send 1m chunk
@@ -312,7 +299,6 @@ esp_err_t get_handler_1m(httpd_req_t *req)
             NABTO_LOG_INFO(("Could not send chunk %i", t));
             return ESP_FAIL;
         }
-        
     }
     // send last 0 chunk to end the stream
     httpd_resp_send_chunk(req, (const char *) resp, 0);
@@ -320,7 +306,7 @@ esp_err_t get_handler_1m(httpd_req_t *req)
     int64_t end_time = esp_timer_get_time();
     int64_t time = end_time - start_time;
     float kb = 1000000/1024;
-    
+
     NABTO_LOG_INFO(("Finished in %lldms kb=%f kb/s=%f", time/1000, kb, kb/((float)time/1000000)));
 
     return ESP_OK;
@@ -353,7 +339,7 @@ httpd_uri_t uri_get_mjpeg = {
 };
 
 
-/* 
+/*
  * Function for starting the webserver
  */
 httpd_handle_t start_webserver(void)
@@ -362,7 +348,6 @@ httpd_handle_t start_webserver(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 8081;
 
-    
     /* Empty handle to esp_http_server */
     httpd_handle_t server = NULL;
 
@@ -399,23 +384,23 @@ void main_task(void *pvParameter)
   const char* presharedKey = NABTO_KEY;
   NABTO_LOG_INFO(("NabtoId:%s", nabtoId));
   NABTO_LOG_INFO(("NabtoKey:%s", presharedKey));
-  
+
   // wait for connection
   NABTO_LOG_INFO(("Main task: waiting for connection to the wifi network... "));
   xEventGroupWaitBits(wifi_event_group, CONNECTED_BIT, false, true, portMAX_DELAY);
   NABTO_LOG_INFO(("connected!\n"));
-  
+
   // print the local IP address
   tcpip_adapter_ip_info_t ip_info;
   ESP_ERROR_CHECK(tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_STA, &ip_info));
-  
+
   NABTO_LOG_INFO(("IP Address:  %s", ip4addr_ntoa(&ip_info.ip)));
   NABTO_LOG_INFO(("Subnet mask: %s", ip4addr_ntoa(&ip_info.netmask)));
   NABTO_LOG_INFO(("Gateway:     %s", ip4addr_ntoa(&ip_info.gw)));
 
   // Start the webserver thread
   start_webserver();
-  
+
   // Configure Nabto with the right configuration
   nabto_main_setup* nms = unabto_init_context();
   nms->id = NABTO_ID;
@@ -435,7 +420,7 @@ void main_task(void *pvParameter)
   demo_init();
 
   tunnel_loop_select();
-
+  esp_restart();
 }
 
 static const char *TAG = "scan";
@@ -524,58 +509,86 @@ static void print_auth_mode(int authmode)
     }
 }
 
-typedef struct wifi_network_candidate {
-    uint8_t ssid[33];
-    uint8_t pass[64];
-} wifi_network_candidate_t;
-
-static wifi_network_candidate_t wifiCandidates[(MAX_CANDIDATES) + 1] = {0};
-
-static void setup_candidates()
+static void swap(wifi_ap_record_t *xp, wifi_ap_record_t *yp)
 {
-    const uint8_t* ssid = (const uint8_t*)WIFI_SSID;
-    const uint8_t* pass = (const uint8_t*)WIFI_PASS;
+    const wifi_ap_record_t temp = *xp;
+    *xp = *yp;
+    *yp = temp;
+}
 
-    size_t i = 0;
-    while (i < (sizeof(wifiCandidates) / sizeof(wifiCandidates[0])) - 1) {
-        const uint8_t* const nextSsid = (const uint8_t*)strchr((const char*)ssid, CANDIDATE_SEPARATOR);
-        const uint8_t* const nextPass = (const uint8_t*)strchr((const char*)pass, CANDIDATE_SEPARATOR);
-        
-        if (!nextSsid) {
-            if (strlen((const char*)ssid) > 0) {
-                strcpy((char*)wifiCandidates[i].ssid, (const char*)ssid);
-                strcpy((char*)wifiCandidates[i].pass, (const char*)pass);
-            }
-            break;
+// Move points with higher RSSI to the beginning
+static void sortApRecordsByRSSI(wifi_ap_record_t arr[], size_t n)
+{
+   for (size_t i = 0; i < n - 1; i++) {
+       for (size_t j = 0; j < n - i - 1; j++) {
+           if (arr[j].rssi < arr[j + 1].rssi) {
+              swap(&arr[j], &arr[j + 1]);
+           }
+       }
+   }
+}
+
+static size_t numberOfWifiCandidates = 0;
+static wifi_config_t wifiCandidates[MAX_CANDIDATES] = {0};
+static size_t targetWifiCandidate = -1;
+
+static void load_wifi_candidates()
+{
+    ESP_LOGI(TAG, "setup_wifi_candidates enter");
+
+    numberOfWifiCandidates = 0;
+    memset(wifiCandidates, 0, sizeof(wifiCandidates));
+
+    const char* ssid = WIFI_SSID;
+    const char* pass = WIFI_PASS;
+
+    while (numberOfWifiCandidates < (sizeof(wifiCandidates) / sizeof(wifiCandidates[0]))) {
+
+        const char* const nextSsid = strchr(ssid, CANDIDATE_SEPARATOR);
+        const char* const nextPass = strchr(pass, CANDIDATE_SEPARATOR);
+
+        if (nextSsid) {
+            ESP_LOGI(TAG, "setup_wifi_candidates nextSsid = %s", nextSsid);
         }
 
-        bool copied = false;
+        if (nextPass) {
+            ESP_LOGI(TAG, "setup_wifi_candidates nextPass = %s", nextPass);
+        }
 
-        const size_t ssidLength = nextSsid - ssid;
+        const size_t ssidLength = nextSsid ? nextSsid - ssid : strlen(ssid);
+        const size_t passLength = nextPass ? nextPass - pass : strlen(pass);
 
-        if (ssidLength > 0) {
-            memcpy(wifiCandidates[i].ssid, ssid, ssidLength);
-            copied = true;
+        if (ssidLength > 0 
+                && ssidLength <= sizeof(wifiCandidates[numberOfWifiCandidates].sta.ssid)
+                && passLength <= sizeof(wifiCandidates[numberOfWifiCandidates].sta.password)
+            ) {
+            memcpy(wifiCandidates[numberOfWifiCandidates].sta.ssid, ssid, ssidLength);
+            memcpy(wifiCandidates[numberOfWifiCandidates].sta.password, pass, passLength);
+            numberOfWifiCandidates += 1;
+        }
+
+        if (!nextSsid) {
+            break;
         }
 
         ssid = nextSsid + 1;
 
         if (nextPass) {
-            if (copied) {
-                memcpy(wifiCandidates[i].ssid, ssid, nextPass - pass);
-            }
             pass = nextPass + 1;
         }
-        else {
-            if (copied) {
-                strcpy((char*)wifiCandidates[i].pass, (const char*)pass);
-            }
-        }
-
-        if (copied) {
-            ++i;
-        }
     }
+
+    ESP_LOGI(TAG, "setup_wifi_candidates numberOfWifiCandidates = %d", (int)numberOfWifiCandidates);
+
+    for (size_t i = 0; i < numberOfWifiCandidates; ++i) {
+        char ssid[33] = {0};
+        char password[65] = {0};
+        memcpy(ssid, wifiCandidates[i].sta.ssid, sizeof(wifiCandidates[i].sta.ssid));
+        memcpy(password, wifiCandidates[i].sta.password, sizeof(wifiCandidates[i].sta.password));
+        ESP_LOGI(TAG, "setup_wifi_candidates candidate = '%s' / '%s'", ssid, password);
+    }
+
+    ESP_LOGI(TAG, "setup_wifi_candidates leave");
 }
 
 /* Sleep current thread for specified number of seconds */
@@ -585,33 +598,32 @@ static void cross_sleep_sec(int sec) {
 }
 
 /* Initialize Wi-Fi as sta and set scan method */
-static wifi_network_candidate_t wifi_scan(void)
+static void find_known_wifi(void)
 {
-    setup_candidates();
+    ESP_LOGI(TAG, "wifi_scan enter\n");
 
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
-    assert(sta_netif);
+    const uint16_t maxNumber = DEFAULT_SCAN_LIST_SIZE;
+    wifi_ap_record_t* const ap_info = malloc(sizeof(wifi_ap_record_t) * maxNumber);
 
     ESP_ERROR_CHECK(esp_wifi_start());
-    esp_wifi_scan_start(NULL, true);
 
-    uint16_t number = DEFAULT_SCAN_LIST_SIZE;
-    const size_t ap_info_size = sizeof(wifi_ap_record_t) * DEFAULT_SCAN_LIST_SIZE;
-    wifi_ap_record_t* const ap_info = malloc(ap_info_size);
+    targetWifiCandidate = -1;
 
     while (true) {
-        ESP_LOGI(TAG, "Scanning networks...\n");
 
         uint16_t ap_count = 0;
-        memset(ap_info, 0, ap_info_size);
+        uint16_t number = maxNumber;
+        memset(ap_info, 0, sizeof(wifi_ap_record_t) * maxNumber);
 
+        esp_wifi_scan_start(NULL, true);
         ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&number, ap_info));
         ESP_ERROR_CHECK(esp_wifi_scan_get_ap_num(&ap_count));
 
         ESP_LOGI(TAG, "Total APs scanned = %u", ap_count);
-        for (int i = 0; (i < DEFAULT_SCAN_LIST_SIZE) && (i < ap_count); i++) {
+
+        sortApRecordsByRSSI(ap_info, ap_count);
+
+        for (int i = 0; (i < maxNumber) && (i < ap_count); i++) {
             ESP_LOGI(TAG, "SSID \t\t%s", ap_info[i].ssid);
             ESP_LOGI(TAG, "RSSI \t\t%d", ap_info[i].rssi);
             print_auth_mode(ap_info[i].authmode);
@@ -619,22 +631,37 @@ static wifi_network_candidate_t wifi_scan(void)
                 print_cipher_type(ap_info[i].pairwise_cipher, ap_info[i].group_cipher);
             }
             ESP_LOGI(TAG, "Channel \t\t%d\n", ap_info[i].primary);
-            for (size_t n = 0; n < MAX_CANDIDATES; ++n) {
-                if (wifiCandidates[n].ssid[0] == 0) {
+        }
+
+        esp_wifi_scan_stop();
+
+        for (int i = 0; (targetWifiCandidate == -1) && (i < maxNumber) && (i < ap_count); i++) {
+            char ssid1[33]             = {0};
+            memcpy(ssid1, ap_info[i].ssid, sizeof(ap_info[i].ssid));
+            for (size_t j = 0; j < numberOfWifiCandidates; ++j) {
+                char ssid2[33]             = {0};
+                memcpy(ssid2, wifiCandidates[j].sta.ssid, sizeof(wifiCandidates[j].sta.ssid));
+                if (strcmp(ssid1, ssid2) == 0) {
+                    targetWifiCandidate = j;
                     break;
                 }
-                if (strcmp((const char*)ap_info[i].ssid, (const char*)wifiCandidates[n].ssid) == 0) {
-                    ESP_LOGI(TAG, "Candidate matches \t\t%s\n", ap_info[i].ssid);
-                    esp_wifi_stop();
-                    free(ap_info);
-                    return wifiCandidates[n];
-                }
             }
+        }
+
+        if (targetWifiCandidate != -1) {
+            ESP_LOGI(TAG, "targetWifiCandidate => %d", (int)targetWifiCandidate);
+            break;
         }
 
         ESP_LOGI(TAG, "Waiting for the next scan %d second(s)\n", SCAN_INTERVAL);
         cross_sleep_sec(SCAN_INTERVAL);
     }
+
+    free(ap_info);
+
+    ESP_ERROR_CHECK(esp_wifi_stop());
+
+    ESP_LOGI(TAG, "wifi_scan leave\n");
 }
 
 /*
@@ -642,11 +669,10 @@ static wifi_network_candidate_t wifi_scan(void)
  */
 void app_main()
 {
-
   NABTO_LOG_INFO(("Nabto ESP32 demo starting up!!!"));
 
   NABTO_LOG_INFO(("Initializing nvs flash"));
-    
+
   // Initialize NVS
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -658,7 +684,7 @@ void app_main()
 
   //initialize the camera
   NABTO_LOG_INFO(("Initializing camera"));
-  
+ 
 #if CAMERA_WIRING==ESP_EYE
     /* IO13, IO14 is designed for JTAG by default,
      * to use it as generalized input,
@@ -681,56 +707,40 @@ void app_main()
 
   // disable stdout buffering
   setvbuf(stdout, NULL, _IONBF, 0);
- 
 
+  // Parse WiFi networks descriptions
+  load_wifi_candidates();
 
-  /*
-  NABTO_LOG_INFO(("Testing AES adapter"));
-  if(!aes_cbc_test()) {
-      NABTO_LOG_ERROR(("!!!!!WARNING... AES test not completed"));
-  }
+  // Initialize network stack
+  ESP_ERROR_CHECK(esp_netif_init());
 
-  NABTO_LOG_INFO(("Testing SHA adapter"));
-  if(!hmac_sha256_test()) {
-      NABTO_LOG_ERROR(("!!!!!WARNING... HMAC_SHA256 test not completed"));
-  }
-  */
-  
   // create the event group to handle wifi events
   wifi_event_group = xEventGroupCreate();
-  
-  // initialize the tcp stack
-  tcpip_adapter_init();
-  
-  // initialize the wifi event handler
-  ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL));
-  
-  // initialize the wifi stack in STAtion mode with config in RAM
-  wifi_init_config_t wifi_init_config = WIFI_INIT_CONFIG_DEFAULT();
-  ESP_ERROR_CHECK(esp_wifi_init(&wifi_init_config));
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+  esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+  assert(sta_netif);
+
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
   ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 
-  const wifi_network_candidate_t network = wifi_scan();
-  
+  find_known_wifi();
+
+  ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_START, &event_handler, NULL));
+  ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &event_handler, NULL));
+  ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL));
+
   // configure the wifi connection and start the interface
-  wifi_config_t wifi_config = {
-    // .sta = {
-    //   .ssid = network.ssid,
-    //   .password = network.pass,
-    // },
-  };
-  
-  memcpy(wifi_config.sta.ssid, network.ssid, sizeof(network.ssid));
-  memcpy(wifi_config.sta.ssid, network.pass, sizeof(network.pass));
+  wifi_config_t wifi_config = { 0 };
+  strlcpy((char*)wifi_config.sta.ssid, (const char*)wifiCandidates[targetWifiCandidate].sta.ssid, sizeof(wifi_config.sta.ssid));
+  strlcpy((char*)wifi_config.sta.password, (const char*)wifiCandidates[targetWifiCandidate].sta.password, sizeof(wifi_config.sta.password));
 
   ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
-  NABTO_LOG_INFO(("Connecting to %s\n", WIFI_SSID));
-  
+  NABTO_LOG_INFO(("Connecting to %s\n", wifiCandidates[targetWifiCandidate].sta.ssid));
+
   // start the main task
   xTaskCreate(&main_task, "main_task", 8192, NULL, 5, NULL);
-
-  // Go do something else here
-  
 }
